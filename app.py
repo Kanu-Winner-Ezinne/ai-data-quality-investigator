@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import re
 
 st.set_page_config(
     page_title="AI Data Quality Investigator",
@@ -11,38 +10,31 @@ st.set_page_config(
 
 st.title("🔎 AI Data Quality Investigator")
 st.write(
-    "Investigate missing values, duplicates, formatting problems, "
-    "invalid dates, inconsistent categories, and unusual numeric values."
+    "Upload a CSV or Excel dataset to investigate data quality "
+    "issues, review findings, and preview conservative cleaning."
 )
+
+
+def suggest_columns(columns, keywords):
+    """Suggest columns based on their names."""
+    return [
+        col for col in columns
+        if any(word in str(col).lower() for word in keywords)
+    ]
+
+
+def display_report(report):
+    """Display a report only when it contains findings."""
+    if report:
+        st.dataframe(pd.DataFrame(report), use_container_width=True)
+    else:
+        st.success("No issues detected by this check.")
+
 
 uploaded_file = st.file_uploader(
     "Upload your dataset",
     type=["csv", "xlsx"]
 )
-
-
-def find_date_columns(df):
-    """Suggest columns whose names indicate dates."""
-    keywords = ["date", "time", "timestamp", "dob", "birth"]
-    return [
-        col for col in df.columns
-        if any(word in str(col).lower() for word in keywords)
-    ]
-
-
-def find_id_columns(df):
-    """Suggest likely business identifier columns."""
-    keywords = ["id", "transaction", "customer", "order", "invoice"]
-    return [
-        col for col in df.columns
-        if any(word in str(col).lower() for word in keywords)
-    ]
-
-
-def find_numeric_columns(df):
-    """Return numeric columns."""
-    return list(df.select_dtypes(include="number").columns)
-
 
 if uploaded_file is not None:
     try:
@@ -53,87 +45,125 @@ if uploaded_file is not None:
 
         st.success(f"Loaded: {uploaded_file.name}")
 
-        st.subheader("Dataset preview")
-        st.dataframe(data.head(10), use_container_width=True)
+        # --------------------------------------------------
+        # 1. Dataset overview and visible column names
+        # --------------------------------------------------
+        st.header("1. Dataset overview")
 
         col1, col2, col3 = st.columns(3)
         col1.metric("Rows", data.shape[0])
         col2.metric("Columns", data.shape[1])
         col3.metric("Exact duplicate rows", int(data.duplicated().sum()))
 
-        st.subheader("Choose columns for investigation")
+        st.subheader("Column names detected")
 
-        id_candidates = find_id_columns(data)
-        date_candidates = find_date_columns(data)
-        numeric_candidates = find_numeric_columns(data)
+        column_information = pd.DataFrame({
+            "Column name": [str(col) for col in data.columns],
+            "Data type": [str(data[col].dtype) for col in data.columns],
+            "Missing values": [
+                int(data[col].isna().sum()) for col in data.columns
+            ],
+            "Unique values": [
+                int(data[col].nunique(dropna=True)) for col in data.columns
+            ]
+        })
 
-        id_columns = st.multiselect(
-            "Business ID columns",
-            options=list(data.columns),
-            default=id_candidates,
-            help="For example, Transaction_ID or Customer_ID. "
-                 "Repeated IDs are flagged, not automatically deleted."
+        st.dataframe(column_information, use_container_width=True)
+
+        with st.expander("View all column names as a list"):
+            for column in data.columns:
+                st.write(f"- {column}")
+
+        st.subheader("Dataset preview")
+        st.dataframe(data.head(10), use_container_width=True)
+
+        # --------------------------------------------------
+        # 2. Investigation settings
+        # --------------------------------------------------
+        st.header("2. Choose columns for investigation")
+        st.write(
+            "Review these selections. The app suggests columns based "
+            "on their names, but you can change the selections."
         )
 
-        date_columns = st.multiselect(
-            "Date columns",
-            options=list(data.columns),
-            default=date_candidates,
-            help="Select columns that should contain dates."
+        columns = list(data.columns)
+
+        id_suggestions = suggest_columns(
+            columns,
+            ["id", "transaction", "customer", "order", "invoice"]
         )
 
-        numeric_text_candidates = [
-            col for col in data.columns
-            if any(
-                word in str(col).lower()
-                for word in [
-                    "amount", "price", "sales", "revenue",
-                    "quantity", "cost", "profit", "total"
-                ]
-            )
-        ]
-
-        numeric_text_columns = st.multiselect(
-            "Columns that should be numeric",
-            options=list(data.columns),
-            default=numeric_text_candidates,
-            help="Useful when numbers have accidentally been stored as text."
+        date_suggestions = suggest_columns(
+            columns,
+            ["date", "time", "timestamp", "dob", "birth"]
         )
 
-        category_candidates = [
-            col for col in data.columns
+        numeric_name_suggestions = suggest_columns(
+            columns,
+            [
+                "amount", "price", "sales", "revenue", "quantity",
+                "cost", "profit", "total", "age"
+            ]
+        )
+
+        category_suggestions = [
+            col for col in columns
             if (
-                data[col].dtype == "object"
-                or isinstance(data[col].dtype, pd.StringDtype)
+                pd.api.types.is_object_dtype(data[col])
+                or pd.api.types.is_string_dtype(data[col])
+                or pd.api.types.is_categorical_dtype(data[col])
             )
             and not any(
                 word in str(col).lower()
-                for word in ["email", "description", "comment", "address"]
+                for word in ["description", "comment", "address"]
             )
         ]
 
+        numeric_suggestions = list(
+            data.select_dtypes(include="number").columns
+        )
+
+        id_columns = st.multiselect(
+            "Business ID columns",
+            options=columns,
+            default=id_suggestions,
+            help="Examples: Transaction_ID, Customer_ID, Order_ID."
+        )
+
+        date_columns = st.multiselect(
+            "Columns that should contain dates",
+            options=columns,
+            default=date_suggestions
+        )
+
+        numeric_text_columns = st.multiselect(
+            "Columns that should contain numbers",
+            options=columns,
+            default=numeric_name_suggestions
+        )
+
         category_columns = st.multiselect(
-            "Category columns",
-            options=list(data.columns),
-            default=category_candidates,
-            help="Examples: country, status, product category, or region."
+            "Category columns to check",
+            options=columns,
+            default=category_suggestions
         )
 
-        numeric_columns = st.multiselect(
-            "Numeric columns for outlier checks",
-            options=numeric_candidates,
-            default=numeric_candidates,
-            help="Outliers are unusual values, not necessarily errors."
+        outlier_columns = st.multiselect(
+            "Numeric columns to check for outliers",
+            options=numeric_suggestions,
+            default=numeric_suggestions
         )
 
+        # --------------------------------------------------
+        # 3. Run checks
+        # --------------------------------------------------
         if st.button("Investigate dataset", type="primary"):
 
-            st.header("Investigation results")
+            st.header("3. Investigation results")
+            total_findings = 0
 
-            issue_count = 0
-
-            # 1. Missing values
-            st.subheader("1. Missing values")
+            # Missing values
+            st.subheader("Missing values")
 
             missing = data.isna().sum()
             missing = missing[missing > 0]
@@ -141,90 +171,68 @@ if uploaded_file is not None:
             if missing.empty:
                 st.success("No missing values detected.")
             else:
-                issue_count += int(missing.sum())
+                total_findings += int(missing.sum())
 
                 missing_report = (
                     missing.rename("Missing count")
                     .rename_axis("Column")
                     .reset_index()
                 )
+
                 missing_report["Percentage"] = (
                     missing_report["Missing count"] / len(data) * 100
                 ).round(2)
 
-                st.dataframe(missing_report, use_container_width=True)
-
-            # 2. Exact duplicate rows
-            st.subheader("2. Exact duplicate rows")
-
-            exact_duplicates = int(data.duplicated().sum())
-            issue_count += exact_duplicates
-
-            st.metric("Exact duplicate rows", exact_duplicates)
-
-            if exact_duplicates:
-                with st.expander("Preview duplicate rows"):
-                    st.dataframe(
-                        data[data.duplicated(keep=False)],
-                        use_container_width=True
-                    )
-
-            # 3. Repeated business IDs
-            st.subheader("3. Duplicate business IDs")
-
-            id_findings = []
-
-            for column in id_columns:
-                non_missing = data[column].notna()
-                repeated_mask = (
-                    non_missing
-                    & data[column].duplicated(keep=False)
-                )
-
-                repeated_count = int(
-                    data.loc[repeated_mask, column].nunique()
-                )
-
-                if repeated_count:
-                    id_findings.append({
-                        "Column": column,
-                        "Repeated ID values": repeated_count,
-                        "Affected rows": int(repeated_mask.sum())
-                    })
-
-            if id_findings:
-                issue_count += sum(
-                    item["Affected rows"] for item in id_findings
-                )
-                st.warning(
-                    "Repeated identifiers found. Some IDs can legitimately "
-                    "repeat, so review them using the business rules."
-                )
                 st.dataframe(
-                    pd.DataFrame(id_findings),
+                    missing_report,
                     use_container_width=True
                 )
 
-                with st.expander("Preview rows with repeated IDs"):
-                    for column in id_columns:
-                        non_missing = data[column].notna()
-                        repeated_mask = (
-                            non_missing
-                            & data[column].duplicated(keep=False)
-                        )
-                        if repeated_mask.any():
-                            st.write(f"Repeated values in: {column}")
-                            st.dataframe(
-                                data.loc[repeated_mask],
-                                use_container_width=True
-                            )
-            else:
-                st.success("No repeated non-missing IDs found in selected columns.")
+            # Exact duplicate rows
+            st.subheader("Exact duplicate rows")
 
-            # 4. Extra spaces
-            st.subheader("4. Leading or trailing spaces")
+            duplicate_mask = data.duplicated(keep=False)
+            duplicate_count = int(data.duplicated().sum())
 
-            whitespace_findings = []
+            st.metric("Duplicate rows beyond the first occurrence",
+                      duplicate_count)
+            total_findings += duplicate_count
+
+            if duplicate_count:
+                with st.expander("View exact duplicate records"):
+                    st.dataframe(
+                        data.loc[duplicate_mask],
+                        use_container_width=True
+                    )
+
+            # Duplicate business IDs
+            st.subheader("Duplicate business IDs")
+            id_report = []
+
+            for column in id_columns:
+                values = data[column]
+                non_missing = values.notna()
+                repeated = non_missing & values.duplicated(keep=False)
+
+                repeated_values = values[repeated].nunique()
+
+                if repeated_values:
+                    id_report.append({
+                        "Column": str(column),
+                        "Distinct repeated IDs": int(repeated_values),
+                        "Rows with repeated IDs": int(repeated.sum())
+                    })
+
+            display_report(id_report)
+
+            if id_report:
+                total_findings += sum(
+                    row["Rows with repeated IDs"] for row in id_report
+                )
+
+            # Whitespace
+            st.subheader("Leading or trailing spaces")
+            whitespace_report = []
 
             for column in data.select_dtypes(
                 include=["object", "string"]
@@ -233,67 +241,50 @@ if uploaded_file is not None:
                     lambda value: isinstance(value, str)
                     and value != value.strip()
                 )
-                count = int(mask.sum())
 
-                if count:
-                    whitespace_findings.append({
-                        "Column": column,
-                        "Affected values": count
+                if mask.any():
+                    whitespace_report.append({
+                        "Column": str(column),
+                        "Affected values": int(mask.sum())
                     })
 
-            if whitespace_findings:
-                issue_count += sum(
-                    item["Affected values"]
-                    for item in whitespace_findings
-                )
-                st.dataframe(
-                    pd.DataFrame(whitespace_findings),
-                    use_container_width=True
-                )
-            else:
-                st.success("No leading or trailing spaces detected.")
+            display_report(whitespace_report)
 
-            # 5. Invalid-looking emails
-            st.subheader("5. Invalid-looking email addresses")
+            if whitespace_report:
+                total_findings += sum(
+                    row["Affected values"] for row in whitespace_report
+                )
 
+            # Emails
+            st.subheader("Invalid-looking email addresses")
             email_columns = [
-                col for col in data.columns
-                if "email" in str(col).lower()
+                col for col in columns if "email" in str(col).lower()
             ]
-
-            email_findings = []
+            email_report = []
 
             for column in email_columns:
-                mask = data[column].notna()
-                values = data.loc[mask, column].astype(str).str.strip()
-
+                values = data[column].dropna().astype(str).str.strip()
                 invalid = ~values.str.match(
                     r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
                     na=False
                 )
 
                 if invalid.any():
-                    email_findings.append({
-                        "Column": column,
-                        "Invalid-looking emails": int(invalid.sum())
+                    email_report.append({
+                        "Column": str(column),
+                        "Invalid-looking values": int(invalid.sum())
                     })
 
-            if email_findings:
-                issue_count += sum(
-                    item["Invalid-looking emails"]
-                    for item in email_findings
-                )
-                st.dataframe(
-                    pd.DataFrame(email_findings),
-                    use_container_width=True
-                )
-            else:
-                st.success("No invalid-looking emails detected.")
+            display_report(email_report)
 
-            # 6. Suspicious negative numbers
-            st.subheader("6. Suspicious negative values")
+            if email_report:
+                total_findings += sum(
+                    row["Invalid-looking values"] for row in email_report
+                )
 
-            negative_findings = []
+            # Negative numbers
+            st.subheader("Suspicious negative numeric values")
+            negative_report = []
 
             for column in data.select_dtypes(include="number").columns:
                 if any(
@@ -303,79 +294,67 @@ if uploaded_file is not None:
                         "revenue", "cost", "profit", "age", "total"
                     ]
                 ):
-                    count = int((data[column] < 0).sum())
+                    negative_count = int((data[column] < 0).sum())
 
-                    if count:
-                        negative_findings.append({
-                            "Column": column,
-                            "Negative values": count
+                    if negative_count:
+                        negative_report.append({
+                            "Column": str(column),
+                            "Negative values": negative_count
                         })
 
-            if negative_findings:
-                issue_count += sum(
-                    item["Negative values"]
-                    for item in negative_findings
-                )
-                st.dataframe(
-                    pd.DataFrame(negative_findings),
-                    use_container_width=True
-                )
-                st.caption(
-                    "Negative values may be legitimate, such as refunds "
-                    "or returns. Review before changing them."
-                )
-            else:
-                st.success("No suspicious negative values detected.")
+            display_report(negative_report)
 
-            # 7. Invalid dates
-            st.subheader("7. Invalid dates")
+            if negative_report:
+                total_findings += sum(
+                    row["Negative values"] for row in negative_report
+                )
 
-            date_findings = []
+            st.caption(
+                "Negative values may be legitimate, such as refunds "
+                "or returned goods. Review before changing them."
+            )
+
+            # Invalid dates
+            st.subheader("Invalid dates")
+            date_report = []
 
             for column in date_columns:
-                non_missing = data[column].notna()
+                values = data[column].dropna()
+
                 parsed = pd.to_datetime(
-                    data.loc[non_missing, column],
+                    values,
                     errors="coerce"
                 )
+
                 invalid_count = int(parsed.isna().sum())
 
                 if invalid_count:
-                    date_findings.append({
-                        "Column": column,
-                        "Unparseable dates": invalid_count
+                    date_report.append({
+                        "Column": str(column),
+                        "Unparseable non-missing values": invalid_count
                     })
 
-            if date_findings:
-                issue_count += sum(
-                    item["Unparseable dates"] for item in date_findings
-                )
-                st.dataframe(
-                    pd.DataFrame(date_findings),
-                    use_container_width=True
-                )
-            else:
-                st.success(
-                    "No unparseable dates found in selected date columns."
+            display_report(date_report)
+
+            if date_report:
+                total_findings += sum(
+                    row["Unparseable non-missing values"]
+                    for row in date_report
                 )
 
-            # 8. Numeric values stored as text
-            st.subheader("8. Numeric values stored as text")
-
-            type_findings = []
+            # Numeric values stored as text
+            st.subheader("Numeric values stored as text")
+            type_report = []
 
             for column in numeric_text_columns:
-                if column in numeric_candidates:
+                values = data[column].dropna()
+
+                if values.empty:
                     continue
 
-                non_missing = data[column].notna()
-
-                if not non_missing.any():
-                    continue
-
-                text_values = data.loc[non_missing, column].astype(str).str.strip()
                 normalized = (
-                    text_values
+                    values.astype(str)
+                    .str.strip()
                     .str.replace(",", "", regex=False)
                     .str.replace("$", "", regex=False)
                     .str.replace("€", "", regex=False)
@@ -383,152 +362,135 @@ if uploaded_file is not None:
                     .str.replace("%", "", regex=False)
                 )
 
-                converted = pd.to_numeric(normalized, errors="coerce")
+                converted = pd.to_numeric(
+                    normalized,
+                    errors="coerce"
+                )
+
                 invalid_count = int(converted.isna().sum())
 
                 if invalid_count:
-                    type_findings.append({
-                        "Column": column,
+                    type_report.append({
+                        "Column": str(column),
                         "Values not interpretable as numbers": invalid_count
                     })
 
-            if type_findings:
-                issue_count += sum(
-                    item["Values not interpretable as numbers"]
-                    for item in type_findings
-                )
-                st.dataframe(
-                    pd.DataFrame(type_findings),
-                    use_container_width=True
-                )
-            else:
-                st.success(
-                    "No non-numeric values detected in the selected columns."
+            display_report(type_report)
+
+            if type_report:
+                total_findings += sum(
+                    row["Values not interpretable as numbers"]
+                    for row in type_report
                 )
 
-            # 9. Inconsistent categories
-            st.subheader("9. Inconsistent category formatting")
-
-            category_findings = []
+            # Inconsistent category formatting
+            st.subheader("Inconsistent category formatting")
+            category_report = []
 
             for column in category_columns:
                 values = data[column].dropna().astype(str)
-                normalized = values.str.strip().str.casefold()
 
-                # Find normalized groups that have multiple original forms.
-                groups = pd.DataFrame({
-                    "Original": values,
-                    "Normalized": normalized
+                if values.empty:
+                    continue
+
+                grouped = pd.DataFrame({
+                    "Original value": values,
+                    "Normalized value": values.str.strip().str.casefold()
                 })
 
-                inconsistent_groups = groups.groupby(
-                    "Normalized"
-                )["Original"].nunique()
+                variations = grouped.groupby(
+                    "Normalized value"
+                )["Original value"].nunique()
 
-                inconsistent_groups = inconsistent_groups[
-                    inconsistent_groups > 1
-                ]
+                variations = variations[variations > 1]
 
-                if not inconsistent_groups.empty:
-                    category_findings.append({
-                        "Column": column,
-                        "Groups with formatting variations": int(
-                            len(inconsistent_groups)
+                if not variations.empty:
+                    category_report.append({
+                        "Column": str(column),
+                        "Groups with spacing/case variations": int(
+                            len(variations)
                         )
                     })
 
-            if category_findings:
-                issue_count += sum(
-                    item["Groups with formatting variations"]
-                    for item in category_findings
-                )
-                st.dataframe(
-                    pd.DataFrame(category_findings),
-                    use_container_width=True
-                )
-                st.caption(
-                    "This check flags capitalization or spacing differences "
-                    "after trimming and case normalization. Similar-looking "
-                    "categories are not automatically merged."
-                )
-            else:
-                st.success(
-                    "No capitalization or whitespace category variations found."
+            display_report(category_report)
+
+            if category_report:
+                total_findings += sum(
+                    row["Groups with spacing/case variations"]
+                    for row in category_report
                 )
 
-            # 10. Outliers using the IQR method
-            st.subheader("10. Potential numeric outliers")
+            st.caption(
+                "This check identifies spacing and capitalization "
+                "differences. It does not assume that different labels "
+                "such as 'US' and 'United States' mean the same thing."
+            )
 
-            outlier_findings = []
+            # Outliers (IQR)
+            st.subheader("Potential numeric outliers")
+            outlier_report = []
 
-            for column in numeric_columns:
-                series = data[column].dropna()
+            for column in outlier_columns:
+                values = data[column].dropna()
 
-                if len(series) < 4 or series.nunique() < 2:
+                if len(values) < 4 or values.nunique() < 2:
                     continue
 
-                q1 = series.quantile(0.25)
-                q3 = series.quantile(0.75)
+                q1 = values.quantile(0.25)
+                q3 = values.quantile(0.75)
                 iqr = q3 - q1
 
                 if iqr == 0:
                     continue
 
-                lower_bound = q1 - 1.5 * iqr
-                upper_bound = q3 + 1.5 * iqr
+                lower = q1 - 1.5 * iqr
+                upper = q3 + 1.5 * iqr
 
                 mask = (
                     data[column].notna()
                     & (
-                        (data[column] < lower_bound)
-                        | (data[column] > upper_bound)
+                        (data[column] < lower)
+                        | (data[column] > upper)
                     )
                 )
 
                 count = int(mask.sum())
 
                 if count:
-                    outlier_findings.append({
-                        "Column": column,
+                    outlier_report.append({
+                        "Column": str(column),
                         "Potential outliers": count,
-                        "Lower threshold": round(float(lower_bound), 3),
-                        "Upper threshold": round(float(upper_bound), 3)
+                        "Lower threshold": round(float(lower), 3),
+                        "Upper threshold": round(float(upper), 3)
                     })
 
-            if outlier_findings:
-                issue_count += sum(
-                    item["Potential outliers"]
-                    for item in outlier_findings
-                )
-                st.dataframe(
-                    pd.DataFrame(outlier_findings),
-                    use_container_width=True
-                )
-                st.caption(
-                    "Outliers are statistical flags, not confirmed errors. "
-                    "Review them using business context."
-                )
-            else:
-                st.success(
-                    "No potential outliers detected in the selected columns."
+            display_report(outlier_report)
+
+            if outlier_report:
+                total_findings += sum(
+                    row["Potential outliers"] for row in outlier_report
                 )
 
-            # Summary
-            st.header("Investigation summary")
-            st.metric("Total flagged findings", issue_count)
             st.caption(
-                "This is a count of findings across checks, not a count "
-                "of unique affected records. A record can be flagged by "
-                "more than one check."
+                "Outliers are unusual statistical values, not confirmed "
+                "errors. Business context matters."
+            )
+
+            # Summary
+            st.header("4. Investigation summary")
+            st.metric("Total flagged findings", total_findings)
+
+            st.info(
+                "This is a total across checks, not a count of unique "
+                "affected rows. One record may trigger multiple checks."
             )
 
             # Conservative cleaning preview
-            st.header("Cleaning preview")
-
+            st.header("5. Cleaning preview")
             st.write(
-                "This preview trims leading and trailing spaces and removes "
-                "exact duplicate rows. It does not alter the uploaded data, "
-                "fill missing values, correct dates, or change IDs."
+                "The preview trims leading/trailing spaces and removes "
+                "exact duplicate rows only. It does not overwrite the "
+                "original uploaded data."
             )
 
             cleaned_data = data.copy()
@@ -542,17 +504,17 @@ if uploaded_file is not None:
                     else value
                 )
 
-            before_duplicates = len(cleaned_data)
+            rows_before = len(cleaned_data)
             cleaned_data = cleaned_data.drop_duplicates()
-            removed_duplicates = before_duplicates - len(cleaned_data)
+            duplicates_removed = rows_before - len(cleaned_data)
 
             col1, col2 = st.columns(2)
             col1.metric("Original rows", len(data))
-            col2.metric("Rows in preview", len(cleaned_data))
+            col2.metric("Rows in cleaning preview", len(cleaned_data))
 
             st.write(
-                f"Exact duplicate rows that would be removed: "
-                f"{removed_duplicates}"
+                f"Exact duplicate rows removed in preview: "
+                f"{duplicates_removed}"
             )
 
             st.dataframe(
@@ -563,7 +525,7 @@ if uploaded_file is not None:
             csv_data = cleaned_data.to_csv(index=False).encode("utf-8")
 
             st.download_button(
-                "Download cleaned CSV preview",
+                label="Download cleaned CSV preview",
                 data=csv_data,
                 file_name="cleaned_data_preview.csv",
                 mime="text/csv"
@@ -572,6 +534,6 @@ if uploaded_file is not None:
     except Exception as error:
         st.error(
             "The dataset could not be processed. "
-            "Check the file and selected columns, then try again."
+            "Check that the file is valid and try again."
         )
         st.exception(error)
