@@ -36,6 +36,7 @@ uploaded_file = st.file_uploader(
     type=["csv", "xlsx"]
 )
 
+
 if uploaded_file is not None:
     try:
         if uploaded_file.name.lower().endswith(".csv"):
@@ -43,7 +44,34 @@ if uploaded_file is not None:
         else:
             data = pd.read_excel(uploaded_file)
 
+        # Clean column headers
+        data.columns = [
+            str(col).replace("\ufeff", "").strip()
+            for col in data.columns
+        ]
+
+        # Fix unnamed columns
+        for col in list(data.columns):
+            if col.lower().startswith("unnamed:") or col == "":
+                values = data[col]
+
+                # Remove completely empty columns
+                if values.isna().all():
+                    data = data.drop(columns=[col])
+
+                # Remove a column containing only row numbers
+                elif (
+                    values.reset_index(drop=True).equals(
+                        pd.Series(range(len(data)))
+                    )
+                    or values.reset_index(drop=True).equals(
+                        pd.Series(range(1, len(data) + 1))
+                    )
+                ):
+                    data = data.drop(columns=[col])
+
         st.success(f"Loaded: {uploaded_file.name}")
+
 
         # --------------------------------------------------
         # 1. Dataset overview and visible column names
